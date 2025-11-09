@@ -77,7 +77,8 @@ class HandMotionEstimator:
         self._kalman_filter_x = _KalmanFilter(self.config.low_speed_threshold)
         self._kalman_filter_y = _KalmanFilter(self.config.low_speed_threshold)
 
-    def map_to_screen(self, hand_landmarks) -> Tuple[int, int]:
+    def get_pointer_anchor(self, hand_landmarks) -> Tuple[float, float]:
+        """Return the normalized hand center used for pointer mapping."""
         joint_indices = [0, 1, 2, 5, 13, 17]
         joint_weights = [3, 2, 1, 1, 1, 1]
 
@@ -86,6 +87,11 @@ class HandMotionEstimator:
 
         norm_x = sum(x * w for x, w in zip(x_values, joint_weights)) / sum(joint_weights)
         norm_y = sum(y * w for y, w in zip(y_values, joint_weights)) / sum(joint_weights)
+
+        return norm_x, norm_y
+
+    def map_to_screen(self, hand_landmarks) -> Tuple[int, int]:
+        norm_x, norm_y = self.get_pointer_anchor(hand_landmarks)
 
         extended_x = max(0.0, min(1.0, (norm_x - 0.5) * self.config.extend_ratio_x + 0.5))
         extended_y = max(0.0, min(1.0, (norm_y - 0.5) * self.config.extend_ratio_y + 0.5))

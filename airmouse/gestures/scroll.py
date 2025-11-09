@@ -170,6 +170,21 @@ class ScrollGesture:
         self.scroll_speed_x = 0.0
         self.scroll_speed_y = 0.0
 
+    def reset(self) -> None:
+        self.is_holding = False
+        self.is_pitching = False
+        self.click_return_level = None
+        self.release_return_level_up = None
+        self.release_return_level_low = None
+        self.release_return_level = None
+        self.start_time = None
+        self.normalized_distance_window.clear()
+        self.dynamic_line_history.clear()
+        self.dynamic_threshold_low_history.clear()
+        self.dynamic_threshold_high_history.clear()
+        self.normalized_history.clear()
+        self._reset_scroll_state()
+
     @staticmethod
     def _distance(a: Sequence[float], b: Sequence[float]) -> float:
         return float(np.linalg.norm([a[0] - b[0], a[1] - b[1]]))

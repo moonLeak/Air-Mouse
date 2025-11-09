@@ -47,7 +47,7 @@ def _env_str(name: str, default: str) -> str:
 @dataclass
 class MonitorDisplayConfig:
     show_camera_feed: bool = True
-    show_graph_window: bool = True
+    show_graph_window: bool = False
     draw_skeleton: bool = False
     pinch_debug_terminal: bool = False
 
@@ -60,6 +60,12 @@ class MonitorGraphConfig:
     base_y: int = 300
     scale_factor: int = 200
     horizontal_scale: int = 3
+
+
+@dataclass
+class FramePreprocessConfig:
+    mirror_horizontal: bool = True
+    mirror_vertical: bool = True
 
 
 @dataclass
@@ -79,6 +85,7 @@ class AppConfig:
     roi: ROIConfig
     pinch_gesture: "PinchGestureConfig"
     scroll_gesture: "ScrollGestureConfig"
+    preprocess: FramePreprocessConfig
 
 
 # --- Gesture configs ---
@@ -111,6 +118,10 @@ def load_config() -> AppConfig:
         camera_index=_env_int("AIRMOUSE_CAMERA_INDEX", camera_defaults.camera_index),
         frame_scale=_env_float("AIRMOUSE_FRAME_SCALE", camera_defaults.frame_scale),
     )
+    preprocess = FramePreprocessConfig(
+        mirror_horizontal=_env_bool("AIRMOUSE_MIRROR_HORIZONTAL", True),
+        mirror_vertical=_env_bool("AIRMOUSE_MIRROR_VERTICAL", True),
+    )
     tracker = HandTrackerConfig(
         min_detection_confidence=_env_float("AIRMOUSE_DETECTION_CONFIDENCE", 0.5),
         min_tracking_confidence=_env_float("AIRMOUSE_TRACKING_CONFIDENCE", 0.3),
@@ -123,8 +134,8 @@ def load_config() -> AppConfig:
     )
     monitor_display = MonitorDisplayConfig(
         show_camera_feed=_env_bool("AIRMOUSE_MONITOR_SHOW_CAMERA", True),
-        show_graph_window=_env_bool("AIRMOUSE_MONITOR_SHOW_GRAPH", True),
-        draw_skeleton=_env_bool("AIRMOUSE_MONITOR_DRAW_SKELETON", True),
+        show_graph_window=_env_bool("AIRMOUSE_MONITOR_SHOW_GRAPH", False),
+        draw_skeleton=_env_bool("AIRMOUSE_MONITOR_DRAW_SKELETON", False),
         pinch_debug_terminal=_env_bool("AIRMOUSE_MONITOR_PINCH_DEBUG", False),
     )
     monitor_graph = MonitorGraphConfig(
@@ -141,7 +152,7 @@ def load_config() -> AppConfig:
         graph=monitor_graph,
     )
     entry_gate = EntryDebounceConfig(
-        debounce_ms=_env_int("AIRMOUSE_ENTRY_DEBOUNCE_MS", 1),
+        debounce_ms=_env_int("AIRMOUSE_ENTRY_DEBOUNCE_MS", 220),
         stable_frames=_env_int("AIRMOUSE_ENTRY_STABLE_FRAMES", 4),
         jitter_px=_env_float("AIRMOUSE_ENTRY_JITTER_PX", 6.0),
         softstart_ms=_env_int("AIRMOUSE_ENTRY_SOFTSTART_MS", 250),
@@ -150,23 +161,17 @@ def load_config() -> AppConfig:
         mode_movement=_env_str("AIRMOUSE_ENTRY_MODE", "freeze"),
     )
     roi = ROIConfig(
-        size_scale=_env_float("AIRMOUSE_ROI_SIZE_SCALE", 1.0),
-        min_width_frac=_env_float("AIRMOUSE_ROI_MIN_WIDTH_FRAC", 0.30),
+        base_scale=_env_float("AIRMOUSE_ROI_BASE_SCALE", 1.2),
+        width_ratio=_env_float("AIRMOUSE_ROI_WIDTH_RATIO", 1.5),
+        height_ratio=_env_float("AIRMOUSE_ROI_HEIGHT_RATIO", 1.0),
+        min_width_frac=_env_float("AIRMOUSE_ROI_MIN_WIDTH_FRAC", 0.15),
         max_width_frac=_env_float("AIRMOUSE_ROI_MAX_WIDTH_FRAC", 0.70),
-        aspect_ratio=_env_float("AIRMOUSE_ROI_ASPECT_RATIO", 1.0),
-        size_smooth_beta=_env_float("AIRMOUSE_ROI_SIZE_BETA", 0.08),
-        size_hysteresis=_env_float("AIRMOUSE_ROI_SIZE_HYSTERESIS", 0.10),
-        size_rate_limit=_env_float("AIRMOUSE_ROI_SIZE_RATE_LIMIT", 400.0),
-        margin_px=_env_float("AIRMOUSE_ROI_MARGIN_PX", 16.0),
-        snap_band_frac=_env_float("AIRMOUSE_ROI_SNAP_BAND_FRAC", 0.05),
-        hide_band_px=_env_float("AIRMOUSE_ROI_HIDE_BAND_PX", 24.0),
-        hide_ms=_env_int("AIRMOUSE_ROI_HIDE_MS", 250),
-        lost_tol=_env_int("AIRMOUSE_ROI_LOST_TOL", 8),
+        fit_margin=_env_float("AIRMOUSE_ROI_FIT_MARGIN", 16.0),
+        countdown_seconds=_env_float("AIRMOUSE_ROI_COUNTDOWN_SECONDS", 3.0),
         freeze_seconds=_env_float("AIRMOUSE_ROI_FREEZE_SECONDS", 5.0),
-        buffer_ms=_env_int("AIRMOUSE_ROI_BUFFER_MS", 300),
-        countdown_seconds=_env_int("AIRMOUSE_ROI_COUNTDOWN_SECONDS", 3),
-        countdown_samples=_env_int("AIRMOUSE_ROI_COUNTDOWN_SAMPLES", 5),
-        stability_frames=_env_int("AIRMOUSE_ROI_STABILITY_FRAMES", 4),
+        lost_tol=_env_int("AIRMOUSE_ROI_LOST_TOL", 8),
+        position_smooth_beta=_env_float("AIRMOUSE_ROI_POSITION_BETA", 0.25),
+        size_smooth_beta=_env_float("AIRMOUSE_ROI_SIZE_BETA", 0.20),
     )
 
     pinch = PinchGestureConfig(
@@ -197,4 +202,5 @@ def load_config() -> AppConfig:
         roi=roi,
         pinch_gesture=pinch,
         scroll_gesture=scroll,
+        preprocess=preprocess,
     )

@@ -9,7 +9,7 @@ import platform
 
 @dataclass
 class CameraConfig:
-    camera_index: int = 1               # 默认相机索引
+    camera_index: int = 0               # 默认相机索引
     frame_scale: float = 0.5            # 读到的画面按比例缩放的系数
 
 

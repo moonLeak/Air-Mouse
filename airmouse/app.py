@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from airmouse.config import AppConfig, load_config
+from airmouse.config import AppConfig, FramePreprocessConfig, load_config
 from airmouse.control import EntryDebounceConfig, HandEntryGate, HandMotionEstimator, MousePointer
 from airmouse.gestures import GestureAction, PinchClickGesture, ScrollGesture
 from airmouse.io import CameraStream
@@ -30,8 +30,14 @@ SKELETON_COLOR: Tuple[int, int, int] = (140, 184, 218)
 class AirMouseApplication:
     """Top-level orchestration for the AirMouse pipeline."""
 
+    ROI_EXIT_COUNTDOWN_SEC = 5.0
+
     def __init__(self, config: Optional[AppConfig] = None) -> None:
         self.config = config or load_config()
+        preprocess_config = getattr(self.config, "preprocess", FramePreprocessConfig())
+        self.preprocess = preprocess_config
+        self._mirror_horizontal = bool(preprocess_config.mirror_horizontal)
+        self._mirror_vertical = bool(preprocess_config.mirror_vertical)
         self.pointer = MousePointer()
         self.motion = HandMotionEstimator(self.config.motion)
         entry_gate_config = getattr(self.config, "entry_gate", EntryDebounceConfig())
@@ -73,6 +79,7 @@ class AirMouseApplication:
         self._last_raw_position = None
         self._left_pressed = False  # robust press latch synced with gesture state
         self._running = False
+        self._roi_exit_deadline: Optional[float] = None
 
     def run(self) -> None:
         self._running = True
@@ -90,7 +97,7 @@ class AirMouseApplication:
         signal.signal(signal.SIGTERM, _handle_signal)
 
         try:
-            for frame in camera_stream.frames():
+            for raw_frame in camera_stream.frames():
                 if not self._running:
                     break
 
@@ -105,9 +112,10 @@ class AirMouseApplication:
                 pinch_dyn = pinch_low = pinch_high = None
                 scroll_dyn = scroll_low = scroll_high = None
 
-                frame_height, frame_width = frame.shape[:2]
+                processed_frame = self._preprocess_frame(raw_frame)
+                frame_height, frame_width = processed_frame.shape[:2]
                 timestamp_ms = frame_start * 1000.0
-                hand_list = list(hand_tracker.process(frame))
+                hand_list = list(hand_tracker.process(processed_frame))
                 main_hand = hand_list[0] if hand_list else None
 
                 gate_output = None
@@ -115,7 +123,11 @@ class AirMouseApplication:
                 gate_gain = 0.0
                 allow_actions = False
                 anchor_norm = None
+                anchor_px = None
+                anchor_py = None
                 roi_result = None
+                display_hand = None
+                roi_exit_countdown = None
 
                 if main_hand is None:
                     gate_output = self.entry_gate.update(
@@ -129,6 +141,7 @@ class AirMouseApplication:
                     self.pinch_gesture.reset()
                     self.scroll_gesture.reset()
                     self._last_raw_position = None
+                    self._roi_exit_deadline = None
                     if self.monitor:
                         self.monitor.log_pinch_debug(**self.pinch_gesture.get_debug_state())
                     roi_result = self.roi_manager.update(
@@ -138,16 +151,13 @@ class AirMouseApplication:
                         cx=None,
                         cy=None,
                         scale=None,
-                        gate_status=gate_status,
                     )
                 else:
                     anchor_norm = self.motion.get_pointer_anchor(main_hand)
-                    x, y = self.motion.map_to_screen(main_hand)
-
-                    raw_position = (x, y)
-                    hand_move_speed = self.motion.update_speed(raw_position)
-                    smooth_x, smooth_y = self.motion.smooth(x, y, hand_move_speed)
-                    cam_xy = (anchor_norm[0] * frame_width, anchor_norm[1] * frame_height)
+                    anchor_px = anchor_norm[0] * frame_width
+                    anchor_py = anchor_norm[1] * frame_height
+                    display_hand = main_hand
+                    cam_xy = (anchor_px, anchor_py)
 
                     xs = [lm.x for lm in main_hand.landmark]
                     ys = [lm.y for lm in main_hand.landmark]
@@ -159,20 +169,6 @@ class AirMouseApplication:
                     cx_px = ((min_x + max_x) / 2.0) * frame_width
                     cy_px = ((min_y + max_y) / 2.0) * frame_height
 
-                    gate_output = self.entry_gate.update(
-                        hand_present=True,
-                        cam_xy=cam_xy,
-                        screen_xy=(smooth_x, smooth_y),
-                        timestamp_ms=timestamp_ms,
-                    )
-                    gate_status = gate_output.status
-                    gate_gain = gate_output.gain
-                    allow_actions = gate_output.allow_actions
-
-                    target_xy = gate_output.out_xy or (smooth_x, smooth_y)
-                    if target_xy is not None:
-                        self.pointer.move_to(int(target_xy[0]), int(target_xy[1]))
-
                     roi_result = self.roi_manager.update(
                         timestamp=frame_start,
                         frame_size=(frame_width, frame_height),
@@ -180,9 +176,48 @@ class AirMouseApplication:
                         cx=cx_px,
                         cy=cy_px,
                         scale=scale_px,
-                        gate_status=gate_status,
                     )
-                    allow_actions = allow_actions and roi_result.state in {"active", "snap_hold"}
+
+                    roi_target = None
+                    roi_box = roi_result.roi_box if roi_result else None
+                    roi_active = roi_result.state == "active" and roi_box is not None
+                    anchor_in_roi = (
+                        roi_active and self._point_inside_roi(anchor_px, anchor_py, roi_box)
+                    )
+                    roi_exit_countdown, timed_out = self._update_roi_exit_timer(
+                        roi_active, anchor_in_roi, frame_start
+                    )
+                    if timed_out:
+                        continue
+                    if anchor_in_roi and roi_box is not None:
+                        roi_target = self._map_roi_to_screen(roi_box, anchor_px, anchor_py)
+
+                    gate_input_xy = roi_target or self.pointer.position
+
+                    gate_output = self.entry_gate.update(
+                        hand_present=True,
+                        cam_xy=cam_xy,
+                        screen_xy=gate_input_xy,
+                        timestamp_ms=timestamp_ms,
+                    )
+                    gate_status = gate_output.status
+                    gate_gain = gate_output.gain
+                    allow_actions = gate_output.allow_actions and roi_active and anchor_in_roi
+
+                    previous_target_xy = self._last_raw_position
+                    smooth_coords: Optional[Tuple[int, int]] = None
+                    final_target_xy = gate_output.out_xy if anchor_in_roi else None
+                    if final_target_xy is not None:
+                        final_target_xy = (int(final_target_xy[0]), int(final_target_xy[1]))
+                        hand_move_speed = self.motion.update_speed(final_target_xy)
+                        smooth_x, smooth_y = self.motion.smooth(
+                            final_target_xy[0], final_target_xy[1], hand_move_speed
+                        )
+                        smooth_coords = (smooth_x, smooth_y)
+                        self.pointer.move_to(smooth_x, smooth_y)
+                        self._last_raw_position = final_target_xy
+                    else:
+                        hand_move_speed = 0.0
 
                     thumb_tip = main_hand.landmark[4]
                     index_tip = main_hand.landmark[8]
@@ -197,7 +232,6 @@ class AirMouseApplication:
                     normalized_4to12 = calculate_normalized_distance(distance_4to12, reference_4to12)
                     normalized_4to12_val = normalized_4to12
 
-                    self._draw_hand_overlay(frame, main_hand, anchor_norm)
                     if allow_actions:
                         pinch_action = self.pinch_gesture.update(normalized_4to8, hand_move_speed)
                         if self.monitor:
@@ -213,10 +247,10 @@ class AirMouseApplication:
                                 self.pointer.release_left()
                                 self._left_pressed = False
 
-                        anchor_position = self._last_raw_position
+                        anchor_position = previous_target_xy
                         scroll_actions = self.scroll_gesture.update(
                             normalized_4to12,
-                            (smooth_x, smooth_y),
+                            smooth_coords or self.pointer.position,
                             anchor_position,
                             hand_move_speed,
                         )
@@ -229,8 +263,6 @@ class AirMouseApplication:
                         self.scroll_gesture.reset()
                         if self.monitor:
                             self.monitor.log_pinch_debug(**self.pinch_gesture.get_debug_state())
-
-                    self._last_raw_position = raw_position
 
                     if self.monitor:
                         if self.pinch_gesture.dynamic_line_history:
@@ -258,11 +290,14 @@ class AirMouseApplication:
                         action_text = ",".join(filter(None, [pinch_action_label, *scroll_action_labels])) or "none"
                         self.monitor.log_data(time.time(), action_text, normalized_4to8, normalized_4to12)
 
+                if display_hand is not None:
+                    self._draw_hand_overlay(processed_frame, display_hand, anchor_norm)
                 if roi_result:
-                    self._draw_roi_overlay(frame, roi_result)
-
-                mirrored_frame = cv2.flip(frame, 1)
-                fps = 1.0 / max(time.time() - frame_start, 1e-6)
+                    self._draw_roi_overlay(
+                        processed_frame,
+                        roi_result,
+                        exit_countdown=roi_exit_countdown,
+                    )
 
                 # Robust state-sync: if gesture thinks we're pitching but we somehow
                 # missed the one-shot 'pitch' event, press once here.
@@ -276,58 +311,8 @@ class AirMouseApplication:
 
                 if self.monitor:
                     monitor_cfg = self.config.monitor
-                    # Compose overlay lines for HOLD-related diagnostics
-                    lines = []
-                    lines.append(
-                        f"Pinch norm(4-8): {normalized_4to8_val:.3f}" if normalized_4to8_val is not None else "Pinch norm(4-8): N/A"
-                    )
-                    if pinch_dyn is not None:
-                        lines.append(f"Pinch dyn/low/high: {pinch_dyn:.3f}/{pinch_low:.3f}/{pinch_high:.3f}")
-                    lines.append(
-                        f"Pinch hold:{self.pinch_gesture.is_holding} pitch:{self.pinch_gesture.is_pitching}"
-                    )
-                    # Add more internals helpful for pitch debugging
-                    elapsed = (time.time() - (self.pinch_gesture.start_time or time.time())) if self.pinch_gesture.is_holding else 0.0
-                    lines.append(
-                        f"Pinch elapsed:{elapsed:.2f}s clickLevel:{getattr(self.pinch_gesture, 'click_return_level', None)}"
-                    )
-                    lines.append(
-                        f"Pinch release up/low/level: {getattr(self.pinch_gesture, 'release_return_level_up', None)} / "
-                        f"{getattr(self.pinch_gesture, 'release_return_level_low', None)} / "
-                        f"{getattr(self.pinch_gesture, 'release_return_level', None)}"
-                    )
-                    lines.append(f"Entry gate: {gate_status} gain:{gate_gain:.2f} allow:{allow_actions}")
-                    if roi_result:
-                        lines.append(
-                            f"ROI state:{roi_result.state} show:{roi_result.show_box} countdown:{roi_result.countdown_value}"
-                        )
-                    lines.append(
-                        "Pinch params: "
-                        f"win={self.pinch_gesture.window_size} "
-                        f"stab={self.pinch_gesture.stability_duration:.2f}s "
-                        f"margin={self.pinch_gesture.threshold_margin:.2f} "
-                        f"lowspd={self.pinch_gesture.low_speed_threshold:.0f} "
-                        f"freeze={self.pinch_gesture.freeze_thresholds_during_hold}"
-                    )
-
-                    lines.append(
-                        f"Scroll norm(4-12): {normalized_4to12_val:.3f}" if normalized_4to12_val is not None else "Scroll norm(4-12): N/A"
-                    )
-                    if scroll_dyn is not None:
-                        lines.append(f"Scroll dyn/low/high: {scroll_dyn:.3f}/{scroll_low:.3f}/{scroll_high:.3f}")
-                    lines.append(
-                        f"Scroll hold:{self.scroll_gesture.is_holding} pitch:{self.scroll_gesture.is_pitching}"
-                    )
-                    lines.append(
-                        "Scroll params: "
-                        f"win={self.scroll_gesture.window_size} "
-                        f"stab={self.scroll_gesture.stability_duration:.2f}s "
-                        f"margin={self.scroll_gesture.threshold_margin:.2f} "
-                        f"lowspd={self.scroll_gesture.low_speed_threshold:.0f}"
-                    )
-
                     if monitor_cfg.display.show_camera_feed:
-                        self.monitor.display_camera_feed(mirrored_frame, hand_move_speed, fps, lines)
+                        self.monitor.display_camera_feed(processed_frame)
 
                     if monitor_cfg.display.show_graph_window:
                         graph_frame = np.zeros(
@@ -336,7 +321,7 @@ class AirMouseApplication:
                         self.monitor.display_graphs(graph_frame)
                         cv2.imshow("Graph Monitor", graph_frame)
                 else:
-                    cv2.imshow("Camera Feed", mirrored_frame)
+                    cv2.imshow("Camera Feed", processed_frame)
 
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
@@ -368,14 +353,10 @@ class AirMouseApplication:
         if height == 0 or width == 0:
             return
 
-        def _to_pixel(nx: float, ny: float) -> Tuple[int, int]:
-            px = int(round(nx * width))
-            py = int(round(ny * height))
-            px = max(0, min(width - 1, px))
-            py = max(0, min(height - 1, py))
-            return px, py
-
-        landmark_pixels = [_to_pixel(landmark.x, landmark.y) for landmark in hand_landmarks.landmark]
+        landmark_pixels = [
+            self._normalized_to_display_pixel(landmark.x, landmark.y, width, height)
+            for landmark in hand_landmarks.landmark
+        ]
 
         for start_idx, end_idx in HAND_CONNECTIONS:
             start_point = landmark_pixels[start_idx]
@@ -388,7 +369,12 @@ class AirMouseApplication:
         if anchor_norm is None:
             return
 
-        anchor_px, anchor_py = _to_pixel(anchor_norm[0], anchor_norm[1])
+        anchor_x = min(max(anchor_norm[0], 0.0), 1.0)
+        anchor_y = min(max(anchor_norm[1], 0.0), 1.0)
+        anchor_px = int(round(anchor_x * (width - 1)))
+        anchor_py = int(round(anchor_y * (height - 1)))
+        anchor_px = max(0, min(width - 1, anchor_px))
+        anchor_py = max(0, min(height - 1, anchor_py))
         cross_size = 6
 
         def _clamp_point(px: int, py: int) -> Tuple[int, int]:
@@ -404,7 +390,13 @@ class AirMouseApplication:
         cv2.line(frame, top_left, bottom_right, SKELETON_COLOR, 2)
         cv2.line(frame, top_right, bottom_left, SKELETON_COLOR, 2)
 
-    def _draw_roi_overlay(self, frame, roi_result: ROIResult) -> None:
+    def _draw_roi_overlay(
+        self,
+        frame,
+        roi_result: ROIResult,
+        *,
+        exit_countdown: Optional[float] = None,
+    ) -> None:
         if frame is None or roi_result is None:
             return
 
@@ -432,15 +424,15 @@ class AirMouseApplication:
                 for start, end in corners:
                     cv2.line(frame, start, end, box_color, thickness)
 
-        if roi_result.state == "out_of_bounds":
-            message = "Move hand back into view"
+        if roi_result.state == "preview" and not roi_result.show_box:
+            message = "Move hand inside frame to continue"
             font_scale = max(frame.shape[1], frame.shape[0]) / 900.0
-            font_scale = max(0.6, min(1.0, font_scale))
+            font_scale = max(0.6, min(1.2, font_scale))
             text_size, _ = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)
             pos = ((frame.shape[1] - text_size[0]) // 2, int(40 + text_size[1]))
             cv2.putText(frame, message, pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (200, 200, 200), 2, cv2.LINE_AA)
 
-        if roi_result.state == "countdown" and roi_result.countdown_value and roi_result.countdown_value > 0:
+        if roi_result.state == "preview" and roi_result.countdown_value and roi_result.countdown_value > 0:
             text = str(roi_result.countdown_value)
             font_scale = max(frame.shape[1], frame.shape[0]) / 450.0
             font_scale = max(1.0, min(3.0, font_scale))
@@ -449,6 +441,99 @@ class AirMouseApplication:
             text_x = (frame.shape[1] - text_size[0]) // 2
             text_y = (frame.shape[0] + text_size[1]) // 2
             cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness_ct, cv2.LINE_AA)
+
+        if roi_result.state == "frozen" and roi_result.frozen_remaining:
+            message = f"Frozen {roi_result.frozen_remaining:.1f}s"
+            font_scale = max(frame.shape[1], frame.shape[0]) / 900.0
+            font_scale = max(0.6, min(1.2, font_scale))
+            text_size, _ = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)
+            pos = ((frame.shape[1] - text_size[0]) // 2, int(frame.shape[0] * 0.12))
+            cv2.putText(frame, message, pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (180, 255, 180), 2, cv2.LINE_AA)
+
+        if exit_countdown is not None and exit_countdown > 0.0:
+            message = f"Re-center in {exit_countdown:.1f}s"
+            font_scale = max(frame.shape[1], frame.shape[0]) / 1200.0
+            font_scale = max(0.5, min(1.0, font_scale))
+            text_size, _ = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)
+            pos = ((frame.shape[1] - text_size[0]) // 2, int(frame.shape[0] * 0.9))
+            cv2.putText(frame, message, pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 200, 255), 2, cv2.LINE_AA)
+
+    def _map_roi_to_screen(self, roi_box: Tuple[int, int, int, int], cx_px: float, cy_px: float) -> Tuple[int, int]:
+        x0, y0, w, h = roi_box
+        w = max(w, 1)
+        h = max(h, 1)
+        u = (cx_px - x0) / w
+        v = (cy_px - y0) / h
+        u = float(min(max(u, 0.0), 1.0))
+        v = float(min(max(v, 0.0), 1.0))
+
+        screen_width = self.motion.config.screen_width
+        screen_height = self.motion.config.screen_height
+        screen_x = int(round(u * screen_width))
+        screen_y = int(round(v * screen_height))
+        return screen_x, screen_y
+
+    def _preprocess_frame(self, frame):
+        if self._mirror_horizontal and self._mirror_vertical:
+            return cv2.flip(frame, -1)
+        if self._mirror_horizontal:
+            return cv2.flip(frame, 1)
+        if self._mirror_vertical:
+            return cv2.flip(frame, 0)
+        return frame
+
+    def _normalized_to_display_pixel(self, nx: float, ny: float, width: int, height: int) -> Tuple[int, int]:
+        nx = min(max(nx, 0.0), 1.0)
+        ny = min(max(ny, 0.0), 1.0)
+        px = int(round(nx * (width - 1)))
+        py = int(round(ny * (height - 1)))
+        px = max(0, min(width - 1, px))
+        py = max(0, min(height - 1, py))
+        return px, py
+
+    def _point_inside_roi(
+        self,
+        px: Optional[float],
+        py: Optional[float],
+        roi_box: Optional[Tuple[int, int, int, int]],
+    ) -> bool:
+        if px is None or py is None or roi_box is None:
+            return False
+        x0, y0, w, h = roi_box
+        return x0 <= px <= x0 + w and y0 <= py <= y0 + h
+
+    def _update_roi_exit_timer(
+        self,
+        roi_active: bool,
+        anchor_in_roi: bool,
+        timestamp: float,
+    ) -> Tuple[Optional[float], bool]:
+        if not roi_active:
+            self._roi_exit_deadline = None
+            return None, False
+        if anchor_in_roi:
+            self._roi_exit_deadline = None
+            return None, False
+
+        if self._roi_exit_deadline is None:
+            self._roi_exit_deadline = timestamp + self.ROI_EXIT_COUNTDOWN_SEC
+
+        remaining = max(0.0, self._roi_exit_deadline - timestamp)
+        if remaining <= 0.0:
+            self._roi_exit_deadline = None
+            self._handle_roi_timeout()
+            return None, True
+        return remaining, False
+
+    def _handle_roi_timeout(self) -> None:
+        self.roi_manager.reset()
+        self.entry_gate.reset(preserve_output=True)
+        self.pinch_gesture.reset()
+        self.scroll_gesture.reset()
+        self._last_raw_position = None
+        if self._left_pressed:
+            self.pointer.release_left()
+            self._left_pressed = False
 
     def _handle_scroll_action(self, action: GestureAction) -> None:
         if action.kind == "right_click":
