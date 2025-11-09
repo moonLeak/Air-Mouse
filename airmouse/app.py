@@ -30,7 +30,7 @@ SKELETON_COLOR: Tuple[int, int, int] = (140, 184, 218)
 class AirMouseApplication:
     """Top-level orchestration for the AirMouse pipeline."""
 
-    ROI_EXIT_COUNTDOWN_SEC = 5.0
+    EDGE_PADDING_EPS = 1e-6
 
     def __init__(self, config: Optional[AppConfig] = None) -> None:
         self.config = config or load_config()
@@ -38,6 +38,12 @@ class AirMouseApplication:
         self.preprocess = preprocess_config
         self._mirror_horizontal = bool(preprocess_config.mirror_horizontal)
         self._mirror_vertical = bool(preprocess_config.mirror_vertical)
+        padding = getattr(self.config, "roi_edge_padding", 0.05)
+        self._edge_padding = float(min(max(padding, 0.0), 0.49))
+        self._roi_exit_countdown_duration = max(
+            0.1, float(getattr(self.config, "roi_exit_countdown", 5.0))
+        )
+        self._roi_auto_reset = bool(getattr(self.config, "roi_auto_reset", True))
         self.pointer = MousePointer()
         self.motion = HandMotionEstimator(self.config.motion)
         entry_gate_config = getattr(self.config, "entry_gate", EntryDebounceConfig())
@@ -80,6 +86,7 @@ class AirMouseApplication:
         self._left_pressed = False  # robust press latch synced with gesture state
         self._running = False
         self._roi_exit_deadline: Optional[float] = None
+        self._static_roi_box: Optional[Tuple[int, int, int, int]] = None
 
     def run(self) -> None:
         self._running = True
@@ -177,6 +184,21 @@ class AirMouseApplication:
                         cy=cy_px,
                         scale=scale_px,
                     )
+                    if not self._roi_auto_reset:
+                        if (
+                            self._static_roi_box is None
+                            and roi_result.state == "active"
+                            and roi_result.roi_box
+                        ):
+                            self._static_roi_box = roi_result.roi_box
+                        if self._static_roi_box is not None:
+                            roi_result = ROIResult(
+                                state="active",
+                                roi_box=self._static_roi_box,
+                                show_box=True,
+                                countdown_value=None,
+                                frozen_remaining=None,
+                            )
 
                     roi_target = None
                     roi_box = roi_result.roi_box if roi_result else None
@@ -184,11 +206,14 @@ class AirMouseApplication:
                     anchor_in_roi = (
                         roi_active and self._point_inside_roi(anchor_px, anchor_py, roi_box)
                     )
-                    roi_exit_countdown, timed_out = self._update_roi_exit_timer(
-                        roi_active, anchor_in_roi, frame_start
-                    )
-                    if timed_out:
-                        continue
+                    if self._roi_auto_reset:
+                        roi_exit_countdown, timed_out = self._update_roi_exit_timer(
+                            roi_active, anchor_in_roi, frame_start
+                        )
+                        if timed_out:
+                            continue
+                    else:
+                        roi_exit_countdown = None
                     if anchor_in_roi and roi_box is not None:
                         roi_target = self._map_roi_to_screen(roi_box, anchor_px, anchor_py)
 
@@ -343,7 +368,10 @@ class AirMouseApplication:
         hand_landmarks,
         anchor_norm: Optional[Tuple[float, float]],
     ) -> None:
-        if not self.config.monitor.display.draw_skeleton:
+        display_cfg = getattr(self.config.monitor, "display", None)
+        draw_skeleton = bool(getattr(display_cfg, "draw_skeleton", False))
+        draw_anchor = bool(getattr(display_cfg, "draw_anchor", True))
+        if not (draw_skeleton or draw_anchor):
             return
 
         if frame is None or hand_landmarks is None:
@@ -358,13 +386,14 @@ class AirMouseApplication:
             for landmark in hand_landmarks.landmark
         ]
 
-        for start_idx, end_idx in HAND_CONNECTIONS:
-            start_point = landmark_pixels[start_idx]
-            end_point = landmark_pixels[end_idx]
-            cv2.line(frame, start_point, end_point, SKELETON_COLOR, 2)
+        if draw_skeleton:
+            for start_idx, end_idx in HAND_CONNECTIONS:
+                start_point = landmark_pixels[start_idx]
+                end_point = landmark_pixels[end_idx]
+                cv2.line(frame, start_point, end_point, SKELETON_COLOR, 2)
 
-        for px, py in landmark_pixels:
-            cv2.circle(frame, (px, py), 4, SKELETON_COLOR, -1)
+            for px, py in landmark_pixels:
+                cv2.circle(frame, (px, py), 4, SKELETON_COLOR, -1)
 
         if anchor_norm is None:
             return
@@ -375,20 +404,9 @@ class AirMouseApplication:
         anchor_py = int(round(anchor_y * (height - 1)))
         anchor_px = max(0, min(width - 1, anchor_px))
         anchor_py = max(0, min(height - 1, anchor_py))
-        cross_size = 6
-
-        def _clamp_point(px: int, py: int) -> Tuple[int, int]:
-            px = max(0, min(width - 1, px))
-            py = max(0, min(height - 1, py))
-            return px, py
-
-        top_left = _clamp_point(anchor_px - cross_size, anchor_py - cross_size)
-        bottom_right = _clamp_point(anchor_px + cross_size, anchor_py + cross_size)
-        top_right = _clamp_point(anchor_px + cross_size, anchor_py - cross_size)
-        bottom_left = _clamp_point(anchor_px - cross_size, anchor_py + cross_size)
-
-        cv2.line(frame, top_left, bottom_right, SKELETON_COLOR, 2)
-        cv2.line(frame, top_right, bottom_left, SKELETON_COLOR, 2)
+        if draw_anchor:
+            radius = 8
+            cv2.circle(frame, (anchor_px, anchor_py), radius, SKELETON_COLOR, 2, cv2.LINE_AA)
 
     def _draw_roi_overlay(
         self,
@@ -466,6 +484,13 @@ class AirMouseApplication:
         v = (cy_px - y0) / h
         u = float(min(max(u, 0.0), 1.0))
         v = float(min(max(v, 0.0), 1.0))
+        pad = self._edge_padding
+        if pad > 0.0 and pad < 0.5:
+            denom = max(self.EDGE_PADDING_EPS, 1.0 - 2.0 * pad)
+            u = (u - pad) / denom
+            v = (v - pad) / denom
+            u = float(min(max(u, 0.0), 1.0))
+            v = float(min(max(v, 0.0), 1.0))
 
         screen_width = self.motion.config.screen_width
         screen_height = self.motion.config.screen_height
@@ -516,7 +541,7 @@ class AirMouseApplication:
             return None, False
 
         if self._roi_exit_deadline is None:
-            self._roi_exit_deadline = timestamp + self.ROI_EXIT_COUNTDOWN_SEC
+            self._roi_exit_deadline = timestamp + self._roi_exit_countdown_duration
 
         remaining = max(0.0, self._roi_exit_deadline - timestamp)
         if remaining <= 0.0:
@@ -526,6 +551,8 @@ class AirMouseApplication:
         return remaining, False
 
     def _handle_roi_timeout(self) -> None:
+        if not self._roi_auto_reset:
+            return
         self.roi_manager.reset()
         self.entry_gate.reset(preserve_output=True)
         self.pinch_gesture.reset()
@@ -534,6 +561,7 @@ class AirMouseApplication:
         if self._left_pressed:
             self.pointer.release_left()
             self._left_pressed = False
+        self._static_roi_box = None
 
     def _handle_scroll_action(self, action: GestureAction) -> None:
         if action.kind == "right_click":

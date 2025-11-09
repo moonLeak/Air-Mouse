@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from typing import Any, Dict
 
 
 class AirMouseGUI:
     """Simple Tkinter-based control panel for launching AirMouse with custom parameters."""
+    SETTINGS_FILE = Path.home() / ".airmouse_gui_settings.json"
 
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("AirMouse Control Panel")
+        style = ttk.Style(self.root)
+        style.configure("Action.TButton", padding=(40, 20), font=("Helvetica", 12))
 
         self.process: subprocess.Popen | None = None
         self.log_thread: threading.Thread | None = None
@@ -28,20 +34,27 @@ class AirMouseGUI:
     # UI construction
     # ------------------------------------------------------------------ #
     def _init_vars(self) -> None:
-        self.camera_index_var = tk.StringVar(value="0")
-        self.frame_scale_var = tk.StringVar(value="0.6")
-        self.mirror_horizontal_var = tk.BooleanVar(value=True)
-        self.mirror_vertical_var = tk.BooleanVar(value=True)
+        saved = self._load_saved_settings()
 
-        self.monitor_enabled_var = tk.BooleanVar(value=True)
-        self.monitor_camera_var = tk.BooleanVar(value=True)
-        self.monitor_graph_var = tk.BooleanVar(value=False)
-        self.monitor_skeleton_var = tk.BooleanVar(value=False)
+        self.camera_index_var = tk.StringVar(value=str(saved.get("camera_index", "0")))
+        self.frame_scale_var = tk.StringVar(value=str(saved.get("frame_scale", "0.6")))
+        self.mirror_horizontal_var = tk.BooleanVar(value=bool(saved.get("mirror_horizontal", True)))
+        self.mirror_vertical_var = tk.BooleanVar(value=bool(saved.get("mirror_vertical", True)))
+        self.roi_edge_padding_var = tk.StringVar(value=str(saved.get("roi_edge_padding", "0.05")))
+        self.roi_entry_countdown_var = tk.StringVar(value=str(saved.get("roi_entry_countdown", "3.0")))
+        self.roi_exit_countdown_var = tk.StringVar(value=str(saved.get("roi_exit_countdown", "5.0")))
+        self.roi_auto_reset_var = tk.BooleanVar(value=bool(saved.get("roi_auto_reset", True)))
 
-        self.pinch_margin_var = tk.StringVar(value="0.15")
-        self.pinch_stability_var = tk.StringVar(value="0.2")
-        self.scroll_speed_factor_var = tk.StringVar(value="0.5")
-        self.scroll_smoothness_var = tk.StringVar(value="0.8")
+        self.monitor_enabled_var = tk.BooleanVar(value=bool(saved.get("monitor_enabled", True)))
+        self.monitor_camera_var = tk.BooleanVar(value=bool(saved.get("monitor_camera", True)))
+        self.monitor_graph_var = tk.BooleanVar(value=bool(saved.get("monitor_graph", False)))
+        self.monitor_skeleton_var = tk.BooleanVar(value=bool(saved.get("monitor_skeleton", False)))
+        self.monitor_anchor_var = tk.BooleanVar(value=bool(saved.get("monitor_anchor", True)))
+
+        self.pinch_margin_var = tk.StringVar(value=str(saved.get("pinch_margin", "0.15")))
+        self.pinch_stability_var = tk.StringVar(value=str(saved.get("pinch_stability", "0.2")))
+        self.scroll_speed_factor_var = tk.StringVar(value=str(saved.get("scroll_speed_factor", "0.5")))
+        self.scroll_smoothness_var = tk.StringVar(value=str(saved.get("scroll_smoothness", "0.8")))
 
         self.status_var = tk.StringVar(value="Ready")
 
@@ -74,6 +87,29 @@ class AirMouseGUI:
         ttk.Checkbutton(
             monitor_frame, text="Draw skeleton overlay", variable=self.monitor_skeleton_var
         ).grid(row=3, column=0, sticky="w")
+        ttk.Checkbutton(
+            monitor_frame, text="Show anchor marker", variable=self.monitor_anchor_var
+        ).grid(row=4, column=0, sticky="w")
+
+        pointer_frame = ttk.LabelFrame(main, text="Pointer mapping")
+        pointer_frame.pack(fill="x", expand=True, pady=(0, 10))
+        self._add_labeled_entry(
+            pointer_frame, "ROI edge padding", self.roi_edge_padding_var, 0
+        )
+        ttk.Label(pointer_frame, text="(0.0 - 0.49, default 0.05)").grid(
+            row=0, column=2, sticky="w"
+        )
+        self._add_labeled_entry(
+            pointer_frame, "Entry countdown (s)", self.roi_entry_countdown_var, 1
+        )
+        self._add_labeled_entry(
+            pointer_frame, "Re-entry countdown (s)", self.roi_exit_countdown_var, 2
+        )
+        ttk.Checkbutton(
+            pointer_frame,
+            text="Auto re-center when hand leaves",
+            variable=self.roi_auto_reset_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
 
         gesture_frame = ttk.LabelFrame(main, text="Gesture tuning")
         gesture_frame.pack(fill="x", expand=True, pady=(0, 10))
@@ -84,9 +120,13 @@ class AirMouseGUI:
 
         control_frame = ttk.Frame(main)
         control_frame.pack(fill="x", pady=(0, 10))
-        self.start_button = ttk.Button(control_frame, text="Start AirMouse", command=self.start_airmouse)
+        self.start_button = ttk.Button(
+            control_frame, text="Start AirMouse", command=self.start_airmouse, style="Action.TButton"
+        )
         self.start_button.pack(side="left", padx=(0, 8))
-        self.stop_button = ttk.Button(control_frame, text="Stop", command=self.stop_airmouse, state="disabled")
+        self.stop_button = ttk.Button(
+            control_frame, text="Stop", command=self.stop_airmouse, state="disabled", style="Action.TButton"
+        )
         self.stop_button.pack(side="left")
         ttk.Label(control_frame, textvariable=self.status_var).pack(side="right")
 
@@ -182,6 +222,15 @@ class AirMouseGUI:
 
         camera_index = self._parse_int(self.camera_index_var.get(), "Camera index")
         frame_scale = self._parse_float(self.frame_scale_var.get(), "Frame scale")
+        edge_padding = self._parse_float(self.roi_edge_padding_var.get(), "ROI edge padding")
+        if not 0.0 <= edge_padding < 0.5:
+            raise ValueError("ROI edge padding must be between 0.0 and 0.49.")
+        entry_countdown = self._parse_float(self.roi_entry_countdown_var.get(), "Entry countdown")
+        if entry_countdown <= 0:
+            raise ValueError("Entry countdown must be positive.")
+        exit_countdown = self._parse_float(self.roi_exit_countdown_var.get(), "Re-entry countdown")
+        if exit_countdown <= 0:
+            raise ValueError("Re-entry countdown must be positive.")
         pinch_margin = self._parse_float(self.pinch_margin_var.get(), "Pinch margin")
         pinch_stability = self._parse_float(self.pinch_stability_var.get(), "Pinch stability")
         scroll_speed = self._parse_float(self.scroll_speed_factor_var.get(), "Scroll speed factor")
@@ -191,14 +240,40 @@ class AirMouseGUI:
         env["AIRMOUSE_FRAME_SCALE"] = str(frame_scale)
         env["AIRMOUSE_MIRROR_HORIZONTAL"] = self._bool_to_env(self.mirror_horizontal_var.get())
         env["AIRMOUSE_MIRROR_VERTICAL"] = self._bool_to_env(self.mirror_vertical_var.get())
+        env["AIRMOUSE_ROI_EDGE_PADDING"] = str(edge_padding)
+        env["AIRMOUSE_ROI_COUNTDOWN_SECONDS"] = str(entry_countdown)
+        env["AIRMOUSE_ROI_EXIT_COUNTDOWN"] = str(exit_countdown)
+        env["AIRMOUSE_ROI_AUTO_RESET"] = self._bool_to_env(self.roi_auto_reset_var.get())
         env["AIRMOUSE_MONITOR_ENABLED"] = self._bool_to_env(self.monitor_enabled_var.get())
         env["AIRMOUSE_MONITOR_SHOW_CAMERA"] = self._bool_to_env(self.monitor_camera_var.get())
         env["AIRMOUSE_MONITOR_SHOW_GRAPH"] = self._bool_to_env(self.monitor_graph_var.get())
         env["AIRMOUSE_MONITOR_DRAW_SKELETON"] = self._bool_to_env(self.monitor_skeleton_var.get())
+        env["AIRMOUSE_MONITOR_DRAW_ANCHOR"] = self._bool_to_env(self.monitor_anchor_var.get())
         env["AIRMOUSE_PINCH_MARGIN"] = str(pinch_margin)
         env["AIRMOUSE_PINCH_STABILITY"] = str(pinch_stability)
         env["AIRMOUSE_SCROLL_SPEED_FACTOR"] = str(scroll_speed)
         env["AIRMOUSE_SCROLL_SMOOTHNESS"] = str(scroll_smoothness)
+
+        settings = {
+            "camera_index": camera_index,
+            "frame_scale": frame_scale,
+            "mirror_horizontal": self.mirror_horizontal_var.get(),
+            "mirror_vertical": self.mirror_vertical_var.get(),
+            "roi_edge_padding": edge_padding,
+            "roi_entry_countdown": entry_countdown,
+            "roi_exit_countdown": exit_countdown,
+            "roi_auto_reset": self.roi_auto_reset_var.get(),
+            "monitor_enabled": self.monitor_enabled_var.get(),
+            "monitor_camera": self.monitor_camera_var.get(),
+            "monitor_graph": self.monitor_graph_var.get(),
+            "monitor_skeleton": self.monitor_skeleton_var.get(),
+            "monitor_anchor": self.monitor_anchor_var.get(),
+            "pinch_margin": pinch_margin,
+            "pinch_stability": pinch_stability,
+            "scroll_speed_factor": scroll_speed,
+            "scroll_smoothness": scroll_smoothness,
+        }
+        self._persist_settings(settings)
 
         return env
 
@@ -219,6 +294,26 @@ class AirMouseGUI:
     @staticmethod
     def _bool_to_env(value: bool) -> str:
         return "true" if value else "false"
+
+    def _load_saved_settings(self) -> Dict[str, Any]:
+        path = self.SETTINGS_FILE
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return {}
+        return {}
+
+    def _persist_settings(self, settings: Dict[str, Any]) -> None:
+        try:
+            with self.SETTINGS_FILE.open("w", encoding="utf-8") as handle:
+                json.dump(settings, handle, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _append_log(self, text: str) -> None:
         self.log_widget.configure(state="normal")
