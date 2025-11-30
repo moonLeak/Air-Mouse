@@ -49,6 +49,7 @@ class MonitorDisplayConfig:
     show_camera_feed: bool = True
     show_graph_window: bool = False
     draw_skeleton: bool = False
+    draw_anchor: bool = True
     pinch_debug_terminal: bool = False
 
 
@@ -86,6 +87,9 @@ class AppConfig:
     pinch_gesture: "PinchGestureConfig"
     scroll_gesture: "ScrollGestureConfig"
     preprocess: FramePreprocessConfig
+    roi_edge_padding: float
+    roi_exit_countdown: float
+    roi_auto_reset: bool
 
 
 # --- Gesture configs ---
@@ -122,6 +126,8 @@ def load_config() -> AppConfig:
         mirror_horizontal=_env_bool("AIRMOUSE_MIRROR_HORIZONTAL", True),
         mirror_vertical=_env_bool("AIRMOUSE_MIRROR_VERTICAL", True),
     )
+    roi_exit_countdown = _env_float("AIRMOUSE_ROI_EXIT_COUNTDOWN", 5.0)
+    roi_auto_reset = _env_bool("AIRMOUSE_ROI_AUTO_RESET", True)
     tracker = HandTrackerConfig(
         min_detection_confidence=_env_float("AIRMOUSE_DETECTION_CONFIDENCE", 0.5),
         min_tracking_confidence=_env_float("AIRMOUSE_TRACKING_CONFIDENCE", 0.3),
@@ -136,6 +142,7 @@ def load_config() -> AppConfig:
         show_camera_feed=_env_bool("AIRMOUSE_MONITOR_SHOW_CAMERA", True),
         show_graph_window=_env_bool("AIRMOUSE_MONITOR_SHOW_GRAPH", False),
         draw_skeleton=_env_bool("AIRMOUSE_MONITOR_DRAW_SKELETON", False),
+        draw_anchor=_env_bool("AIRMOUSE_MONITOR_DRAW_ANCHOR", True),
         pinch_debug_terminal=_env_bool("AIRMOUSE_MONITOR_PINCH_DEBUG", False),
     )
     monitor_graph = MonitorGraphConfig(
@@ -203,4 +210,7 @@ def load_config() -> AppConfig:
         pinch_gesture=pinch,
         scroll_gesture=scroll,
         preprocess=preprocess,
+        roi_edge_padding=_env_float("AIRMOUSE_ROI_EDGE_PADDING", 0.05),
+        roi_exit_countdown=roi_exit_countdown,
+        roi_auto_reset=roi_auto_reset,
     )

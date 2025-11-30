@@ -145,8 +145,8 @@ class AirMouseGUI:
     # ------------------------------------------------------------------ #
     def start_airmouse(self) -> None:
         if self.process and self.process.poll() is None:
-            messagebox.showinfo("AirMouse", "AirMouse is already running.")
-            return
+            self._append_log("Restarting AirMouse...\n")
+            self.stop_airmouse(wait_for_exit=True)
 
         try:
             env = self._build_env()
@@ -177,7 +177,7 @@ class AirMouseGUI:
 
         threading.Thread(target=self._wait_for_exit, daemon=True).start()
 
-    def stop_airmouse(self) -> None:
+    def stop_airmouse(self, *, wait_for_exit: bool = False) -> None:
         if not self.process or self.process.poll() is not None:
             self._set_running(False)
             return
@@ -185,7 +185,10 @@ class AirMouseGUI:
         self._append_log("Stopping AirMouse...\n")
         self.process.terminate()
         try:
-            self.process.wait(timeout=5)
+            if wait_for_exit:
+                self.process.wait(timeout=5)
+            else:
+                self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self._append_log("Force killing AirMouse.\n")
             self.process.kill()
@@ -324,12 +327,14 @@ class AirMouseGUI:
     def _set_running(self, running: bool) -> None:
         if running:
             self.status_var.set("Running")
-            self.start_button.configure(state="disabled")
+            self.start_button.configure(state="normal", text="Restart")
             self.stop_button.configure(state="normal")
+            self.recenter_button.configure(state="normal")
         else:
             self.status_var.set("Ready")
-            self.start_button.configure(state="normal")
+            self.start_button.configure(state="normal", text="Start AirMouse")
             self.stop_button.configure(state="disabled")
+            self.recenter_button.configure(state="disabled")
             self.process = None
 
     def _on_close(self) -> None:

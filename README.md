@@ -18,6 +18,10 @@ export AIRMOUSE_FRAME_SCALE=0.6         # 摄像头画面缩放比例
 export AIRMOUSE_MONITOR_ENABLED=false   # 关闭调试监视器窗口
 export AIRMOUSE_MIRROR_HORIZONTAL=true  # 启用左右镜像（默认 true）
 export AIRMOUSE_MIRROR_VERTICAL=true    # 启用上下镜像（默认 true）
+export AIRMOUSE_ROI_EDGE_PADDING=0.05   # 判定框边缘映射提前量（0~0.49，越大越容易碰到屏幕边缘）
+export AIRMOUSE_ROI_COUNTDOWN_SECONDS=3 # 进入判定框锁定前的倒计时秒数
+export AIRMOUSE_ROI_EXIT_COUNTDOWN=5    # 离开判定框后重新判定的倒计时秒数
+export AIRMOUSE_ROI_AUTO_RESET=true     # 离开判定框后是否自动重新判定
 ```
 
 更多变量见 `airmouse/config.py`。
@@ -39,7 +43,9 @@ python -m airmouse.gui
 界面支持：
 - 设置相机索引、画面缩放
 - 切换画面左右/上下镜像预处理（同步作用于识别逻辑）
-- 控制调试监视器开关、是否绘制骨骼、是否显示图表窗口
+- 调整“ROI edge padding”因子，决定手掌中心距离框边多少就视为触碰屏幕边缘
+- 设置进入/重新进入倒计时与“离开判定框后自动重新判定”开关
+- 控制调试监视器开关、骨骼/锚点是否绘制、是否显示图表窗口
 - 调整捏合/滚动手势的阈值与速度参数
 - 直接查看 AirMouse 运行日志，并随时停止/重新启动
 
