@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import platform
 import signal
+import sys
 import time
 import math
 from typing import Optional, Tuple
@@ -90,6 +92,7 @@ class AirMouseApplication:
 
     def run(self) -> None:
         self._running = True
+        self._print_diagnostics()
         camera_stream = CameraStream(self.config.camera)
         hand_tracker = HandTracker(self.config.hand_tracker)
 
@@ -157,7 +160,7 @@ class AirMouseApplication:
                         hand_present=False,
                         cx=None,
                         cy=None,
-                        scale=None,
+                        palm_width=None,
                     )
                 else:
                     anchor_norm = self.motion.get_pointer_anchor(main_hand)
@@ -171,8 +174,7 @@ class AirMouseApplication:
                     min_x, max_x = min(xs), max(xs)
                     min_y, max_y = min(ys), max(ys)
                     bbox_width_px = max(1.0, (max_x - min_x) * frame_width)
-                    bbox_height_px = max(1.0, (max_y - min_y) * frame_height)
-                    scale_px = math.hypot(bbox_width_px, bbox_height_px)
+                    palm_width_px = bbox_width_px
                     cx_px = ((min_x + max_x) / 2.0) * frame_width
                     cy_px = ((min_y + max_y) / 2.0) * frame_height
 
@@ -182,7 +184,7 @@ class AirMouseApplication:
                         hand_present=True,
                         cx=cx_px,
                         cy=cy_px,
-                        scale=scale_px,
+                        palm_width=palm_width_px,
                     )
                     if not self._roi_auto_reset:
                         if (
@@ -572,3 +574,82 @@ class AirMouseApplication:
             return
         else:
             raise ValueError(f"Unknown scroll action: {action.kind}")
+
+    # ------------------------------------------------------------------ #
+    # 诊断信息
+    # ------------------------------------------------------------------ #
+
+    def _print_diagnostics(self) -> None:
+        """启动时打印完整的系统和配置诊断信息，方便排查问题。"""
+        import mediapipe as mp
+
+        sep = "=" * 60
+        print(sep)
+        print("  AirMouse 诊断信息（Diagnostic Report）")
+        print(f"  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(sep)
+
+        # 系统信息
+        print("[System]")
+        print(f"  OS          : {platform.system()} {platform.release()} ({platform.version()})")
+        print(f"  Machine     : {platform.machine()}")
+        print(f"  Python      : {sys.version}")
+
+        # 关键库版本
+        print("[Libraries]")
+        print(f"  OpenCV      : {cv2.__version__}")
+        try:
+            print(f"  MediaPipe   : {mp.__version__}")
+        except AttributeError:
+            print("  MediaPipe   : (version unknown)")
+        try:
+            import numpy as _np
+            print(f"  NumPy       : {_np.__version__}")
+        except Exception:
+            pass
+
+        # 摄像头配置
+        cfg = self.config.camera
+        print("[Camera Config]")
+        print(f"  camera_index: {cfg.camera_index}")
+        print(f"  frame_scale : {cfg.frame_scale}")
+
+        # 枚举系统中所有 AVFoundation 摄像头（macOS）
+        if platform.system() == "Darwin":
+            print("[Camera Enumeration (AVFoundation)]")
+            found_any = False
+            for idx in range(8):
+                cap = cv2.VideoCapture(idx, cv2.CAP_AVFOUNDATION)
+                if cap.isOpened():
+                    w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                    h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    print(f"  index {idx}  : found  ({int(w)}x{int(h)} @ {fps:.0f}fps)")
+                    cap.release()
+                    found_any = True
+                else:
+                    cap.release()
+                    # 只打到第一个找不到的之后停止，避免太多输出
+                    if not found_any:
+                        continue
+                    break
+            if not found_any:
+                print("  （未枚举到任何摄像头）")
+
+        # 其他配置
+        print("[AirMouse Config]")
+        print(f"  mirror H/V  : {self.preprocess.mirror_horizontal} / {self.preprocess.mirror_vertical}")
+        print(f"  monitor     : enabled={self.config.monitor.enabled}")
+        if self.config.monitor.enabled:
+            d = self.config.monitor.display
+            print(f"    show_camera_feed : {d.show_camera_feed}")
+            print(f"    draw_skeleton    : {d.draw_skeleton}")
+            print(f"    draw_anchor      : {d.draw_anchor}")
+        roi = self.config.roi
+        print(f"  ROI         : base_scale={roi.base_scale}, touchpad_mult={roi.touchpad_width_multiplier:.2f}")
+        print(f"  ROI countdown: {self.config.roi.countdown_seconds}s")
+        print(f"  roi_auto_reset: {self._roi_auto_reset}")
+
+        print(sep)
+        print("  ↑ 遇到问题请把以上全部内容复制给开发者")
+        print(sep)

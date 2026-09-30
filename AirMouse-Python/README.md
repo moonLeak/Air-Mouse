@@ -4,10 +4,15 @@
 - 激活虚拟环境：`source venv311/bin/activate`
 - 启动程序：`python -m airmouse`
 - `MEDIAPIPE_DISABLE_GPU` 默认在入口中关闭，如需使用 GPU 可自行导出环境变量。
-## 本机示例
-cd /Users/carson_h/Library/CloudStorage/OneDrive-Personal/Protolab/2024-11-18手势识别/New\ Air\ Mouse
+## 首次安装
+```bash
+cd AirMouse-Python
+python3.11 -m venv venv311
 source venv311/bin/activate
+pip install -r requirements.txt
 python -m airmouse
+```
+> `venv311/` 不在版本库中，需要本地创建。macOS 需授予摄像头与辅助功能权限。
 
 ## 配置
 可以通过环境变量覆盖默认参数，例如：
@@ -22,6 +27,7 @@ export AIRMOUSE_ROI_EDGE_PADDING=0.05   # 判定框边缘映射提前量（0~0.4
 export AIRMOUSE_ROI_COUNTDOWN_SECONDS=3 # 进入判定框锁定前的倒计时秒数
 export AIRMOUSE_ROI_EXIT_COUNTDOWN=5    # 离开判定框后重新判定的倒计时秒数
 export AIRMOUSE_ROI_AUTO_RESET=true     # 离开判定框后是否自动重新判定
+export AIRMOUSE_TOUCHPAD_MULTIPLIER=2.5 # 触控板尺寸为手掌宽度的 n 倍，并保持与屏幕相同的长宽比
 ```
 
 更多变量见 `airmouse/config.py`。
@@ -45,6 +51,7 @@ python -m airmouse.gui
 - 切换画面左右/上下镜像预处理（同步作用于识别逻辑）
 - 调整“ROI edge padding”因子，决定手掌中心距离框边多少就视为触碰屏幕边缘
 - 设置进入/重新进入倒计时与“离开判定框后自动重新判定”开关
+- 控制触控板尺寸（n × 手掌宽度，始终匹配屏幕长宽比）
 - 控制调试监视器开关、骨骼/锚点是否绘制、是否显示图表窗口
 - 调整捏合/滚动手势的阈值与速度参数
 - 直接查看 AirMouse 运行日志，并随时停止/重新启动

@@ -124,7 +124,7 @@ def load_config() -> AppConfig:
     )
     preprocess = FramePreprocessConfig(
         mirror_horizontal=_env_bool("AIRMOUSE_MIRROR_HORIZONTAL", True),
-        mirror_vertical=_env_bool("AIRMOUSE_MIRROR_VERTICAL", True),
+        mirror_vertical=_env_bool("AIRMOUSE_MIRROR_VERTICAL", False),  # 大多数摄像头（包括 FaceTime）不需要垂直翻转
     )
     roi_exit_countdown = _env_float("AIRMOUSE_ROI_EXIT_COUNTDOWN", 5.0)
     roi_auto_reset = _env_bool("AIRMOUSE_ROI_AUTO_RESET", True)
@@ -138,6 +138,9 @@ def load_config() -> AppConfig:
         extend_ratio_y=_env_float("AIRMOUSE_EXTEND_RATIO_Y", 2.5),
         low_speed_threshold=_env_float("AIRMOUSE_LOW_SPEED_THRESHOLD", 200.0),
     )
+    screen_aspect_ratio = 1.0
+    if motion.screen_height:
+        screen_aspect_ratio = max(0.01, motion.screen_width / float(motion.screen_height))
     monitor_display = MonitorDisplayConfig(
         show_camera_feed=_env_bool("AIRMOUSE_MONITOR_SHOW_CAMERA", True),
         show_graph_window=_env_bool("AIRMOUSE_MONITOR_SHOW_GRAPH", False),
@@ -167,10 +170,19 @@ def load_config() -> AppConfig:
         lost_tol=_env_int("AIRMOUSE_ENTRY_LOST_TOL", 5),
         mode_movement=_env_str("AIRMOUSE_ENTRY_MODE", "freeze"),
     )
+    roi_base_scale = _env_float("AIRMOUSE_ROI_BASE_SCALE", 1.2)
+    roi_width_ratio = _env_float("AIRMOUSE_ROI_WIDTH_RATIO", 1.5)
+    roi_height_ratio = _env_float("AIRMOUSE_ROI_HEIGHT_RATIO", 1.0)
+    touchpad_multiplier = _env_float(
+        "AIRMOUSE_TOUCHPAD_MULTIPLIER",
+        roi_base_scale * roi_width_ratio,
+    )
     roi = ROIConfig(
-        base_scale=_env_float("AIRMOUSE_ROI_BASE_SCALE", 1.2),
-        width_ratio=_env_float("AIRMOUSE_ROI_WIDTH_RATIO", 1.5),
-        height_ratio=_env_float("AIRMOUSE_ROI_HEIGHT_RATIO", 1.0),
+        base_scale=roi_base_scale,
+        width_ratio=roi_width_ratio,
+        height_ratio=roi_height_ratio,
+        touchpad_width_multiplier=touchpad_multiplier,
+        target_aspect_ratio=screen_aspect_ratio,
         min_width_frac=_env_float("AIRMOUSE_ROI_MIN_WIDTH_FRAC", 0.15),
         max_width_frac=_env_float("AIRMOUSE_ROI_MAX_WIDTH_FRAC", 0.70),
         fit_margin=_env_float("AIRMOUSE_ROI_FIT_MARGIN", 16.0),

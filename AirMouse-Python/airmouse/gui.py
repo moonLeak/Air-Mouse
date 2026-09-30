@@ -9,7 +9,51 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
+
+import cv2
+
+
+def _scan_cameras(max_index: int = 10) -> List[Tuple[int, str]]:
+    """扫描当前系统可用的摄像头，返回 (index, 标签) 列表。
+
+    通过依次尝试 index 0..max_index 来枚举，能成功打开且读取到帧的
+    才算可用。在 macOS 上优先使用 AVFoundation 后端。
+    """
+    import platform
+    results: List[Tuple[int, str]] = []
+    for idx in range(max_index + 1):
+        cap = None
+        try:
+            if platform.system() == "Darwin":
+                cap = cv2.VideoCapture(idx, cv2.CAP_AVFOUNDATION)
+            else:
+                cap = cv2.VideoCapture(idx)
+
+            if not cap.isOpened():
+                continue
+
+            # 实际读一帧验证可用性，最多等 3 秒
+            ready = threading.Event()
+            result_box: list = [False]
+
+            def _check(c=cap, box=result_box, ev=ready):
+                ret, _ = c.read()
+                box[0] = ret
+                ev.set()
+
+            t = threading.Thread(target=_check, daemon=True)
+            t.start()
+            t.join(timeout=3.0)
+
+            if result_box[0]:
+                results.append((idx, f"Camera {idx}"))
+        except Exception:
+            pass
+        finally:
+            if cap is not None:
+                cap.release()
+    return results
 
 
 class AirMouseGUI:
@@ -25,25 +69,68 @@ class AirMouseGUI:
         self.process: subprocess.Popen | None = None
         self.log_thread: threading.Thread | None = None
 
+        # 可用摄像头列表：[(index, label), ...]
+        self._available_cameras: List[Tuple[int, str]] = []
+
         self._init_vars()
         self._build_layout()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # 启动时在后台自动扫描摄像头
+        threading.Thread(target=self._scan_cameras_bg, daemon=True).start()
+
     # ------------------------------------------------------------------ #
     # UI construction
     # ------------------------------------------------------------------ #
+    def _scan_cameras_bg(self) -> None:
+        """后台扫描可用摄像头，完成后更新 UI。"""
+        self.root.after(0, lambda: self.camera_scan_btn.configure(state="disabled", text="扫描中…"))
+        cameras = _scan_cameras()
+        self._available_cameras = cameras
+        self.root.after(0, lambda: self._update_camera_dropdown(cameras))
+
+    def _update_camera_dropdown(self, cameras: List[Tuple[int, str]]) -> None:
+        """用扫描结果更新摄像头下拉菜单。"""
+        self.camera_scan_btn.configure(state="normal", text="🔄 重新扫描")
+        if not cameras:
+            self.camera_combo["values"] = ["（未找到摄像头）"]
+            self.camera_combo.current(0)
+            self.camera_index_var.set("0")
+            return
+
+        labels = [f"{label}  (index={idx})" for idx, label in cameras]
+        self.camera_combo["values"] = labels
+
+        # 选中上次保存的 index（如有）
+        saved_idx = int(self.camera_index_var.get())
+        found = next((i for i, (idx, _) in enumerate(cameras) if idx == saved_idx), None)
+        if found is not None:
+            self.camera_combo.current(found)
+        else:
+            self.camera_combo.current(0)
+            self.camera_index_var.set(str(cameras[0][0]))
+
+        self.camera_combo.bind("<<ComboboxSelected>>", self._on_camera_selected)
+
+    def _on_camera_selected(self, _event=None) -> None:
+        """用户在下拉菜单选择摄像头时更新 camera_index_var。"""
+        sel = self.camera_combo.current()
+        if 0 <= sel < len(self._available_cameras):
+            self.camera_index_var.set(str(self._available_cameras[sel][0]))
+
     def _init_vars(self) -> None:
         saved = self._load_saved_settings()
 
         self.camera_index_var = tk.StringVar(value=str(saved.get("camera_index", "0")))
         self.frame_scale_var = tk.StringVar(value=str(saved.get("frame_scale", "0.6")))
         self.mirror_horizontal_var = tk.BooleanVar(value=bool(saved.get("mirror_horizontal", True)))
-        self.mirror_vertical_var = tk.BooleanVar(value=bool(saved.get("mirror_vertical", True)))
+        self.mirror_vertical_var = tk.BooleanVar(value=bool(saved.get("mirror_vertical", False)))
         self.roi_edge_padding_var = tk.StringVar(value=str(saved.get("roi_edge_padding", "0.05")))
         self.roi_entry_countdown_var = tk.StringVar(value=str(saved.get("roi_entry_countdown", "3.0")))
         self.roi_exit_countdown_var = tk.StringVar(value=str(saved.get("roi_exit_countdown", "5.0")))
         self.roi_auto_reset_var = tk.BooleanVar(value=bool(saved.get("roi_auto_reset", True)))
+        self.touchpad_multiplier_var = tk.StringVar(value=str(saved.get("touchpad_multiplier", "2.5")))
 
         self.monitor_enabled_var = tk.BooleanVar(value=bool(saved.get("monitor_enabled", True)))
         self.monitor_camera_var = tk.BooleanVar(value=bool(saved.get("monitor_camera", True)))
@@ -64,7 +151,18 @@ class AirMouseGUI:
 
         camera_frame = ttk.LabelFrame(main, text="Camera")
         camera_frame.pack(fill="x", expand=True, pady=(0, 10))
-        self._add_labeled_entry(camera_frame, "Camera index", self.camera_index_var, 0)
+
+        # 摄像头选择行：下拉 + 扫描按钮
+        ttk.Label(camera_frame, text="Camera").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        self.camera_combo = ttk.Combobox(camera_frame, width=28, state="readonly")
+        self.camera_combo["values"] = [f"Camera {self.camera_index_var.get()}  (index={self.camera_index_var.get()})"]
+        self.camera_combo.current(0)
+        self.camera_combo.grid(row=0, column=1, sticky="w", pady=4)
+        self.camera_scan_btn = ttk.Button(
+            camera_frame, text="🔄 重新扫描", command=lambda: threading.Thread(target=self._scan_cameras_bg, daemon=True).start()
+        )
+        self.camera_scan_btn.grid(row=0, column=2, padx=(8, 0), pady=4, sticky="w")
+
         self._add_labeled_entry(camera_frame, "Frame scale", self.frame_scale_var, 1)
         ttk.Checkbutton(
             camera_frame, text="Mirror horizontally", variable=self.mirror_horizontal_var
@@ -105,11 +203,15 @@ class AirMouseGUI:
         self._add_labeled_entry(
             pointer_frame, "Re-entry countdown (s)", self.roi_exit_countdown_var, 2
         )
+        self._add_labeled_entry(
+            pointer_frame, "Touchpad size (× palm width)", self.touchpad_multiplier_var, 3
+        )
+        ttk.Label(pointer_frame, text="(n > 0, default 2.5)").grid(row=3, column=2, sticky="w")
         ttk.Checkbutton(
             pointer_frame,
             text="Auto re-center when hand leaves",
             variable=self.roi_auto_reset_var,
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        ).grid(row=4, column=0, columnspan=2, sticky="w")
 
         gesture_frame = ttk.LabelFrame(main, text="Gesture tuning")
         gesture_frame.pack(fill="x", expand=True, pady=(0, 10))
@@ -130,8 +232,14 @@ class AirMouseGUI:
         self.stop_button.pack(side="left")
         ttk.Label(control_frame, textvariable=self.status_var).pack(side="right")
 
-        log_frame = ttk.LabelFrame(main, text="Log")
+        log_frame = ttk.LabelFrame(main, text="日志 (遇到问题请点「📋 复制日志」发给开发者)")
         log_frame.pack(fill="both", expand=True)
+
+        log_btn_bar = ttk.Frame(log_frame)
+        log_btn_bar.pack(fill="x", pady=(4, 0))
+        ttk.Button(log_btn_bar, text="📋 复制日志", command=self._copy_log).pack(side="left", padx=4)
+        ttk.Button(log_btn_bar, text="🗑 清空日志", command=self._clear_log).pack(side="left", padx=4)
+
         self.log_widget = ScrolledText(log_frame, height=12, state="disabled")
         self.log_widget.pack(fill="both", expand=True)
 
@@ -234,6 +342,9 @@ class AirMouseGUI:
         exit_countdown = self._parse_float(self.roi_exit_countdown_var.get(), "Re-entry countdown")
         if exit_countdown <= 0:
             raise ValueError("Re-entry countdown must be positive.")
+        touchpad_multiplier = self._parse_float(self.touchpad_multiplier_var.get(), "Touchpad multiplier")
+        if touchpad_multiplier <= 0:
+            raise ValueError("Touchpad multiplier must be positive.")
         pinch_margin = self._parse_float(self.pinch_margin_var.get(), "Pinch margin")
         pinch_stability = self._parse_float(self.pinch_stability_var.get(), "Pinch stability")
         scroll_speed = self._parse_float(self.scroll_speed_factor_var.get(), "Scroll speed factor")
@@ -247,6 +358,7 @@ class AirMouseGUI:
         env["AIRMOUSE_ROI_COUNTDOWN_SECONDS"] = str(entry_countdown)
         env["AIRMOUSE_ROI_EXIT_COUNTDOWN"] = str(exit_countdown)
         env["AIRMOUSE_ROI_AUTO_RESET"] = self._bool_to_env(self.roi_auto_reset_var.get())
+        env["AIRMOUSE_TOUCHPAD_MULTIPLIER"] = str(touchpad_multiplier)
         env["AIRMOUSE_MONITOR_ENABLED"] = self._bool_to_env(self.monitor_enabled_var.get())
         env["AIRMOUSE_MONITOR_SHOW_CAMERA"] = self._bool_to_env(self.monitor_camera_var.get())
         env["AIRMOUSE_MONITOR_SHOW_GRAPH"] = self._bool_to_env(self.monitor_graph_var.get())
@@ -266,6 +378,7 @@ class AirMouseGUI:
             "roi_entry_countdown": entry_countdown,
             "roi_exit_countdown": exit_countdown,
             "roi_auto_reset": self.roi_auto_reset_var.get(),
+            "touchpad_multiplier": touchpad_multiplier,
             "monitor_enabled": self.monitor_enabled_var.get(),
             "monitor_camera": self.monitor_camera_var.get(),
             "monitor_graph": self.monitor_graph_var.get(),
@@ -322,6 +435,23 @@ class AirMouseGUI:
         self.log_widget.configure(state="normal")
         self.log_widget.insert("end", text)
         self.log_widget.see("end")
+        self.log_widget.configure(state="disabled")
+
+    def _copy_log(self) -> None:
+        """把日志区域的全部内容复制到系统剪贴板。"""
+        content = self.log_widget.get("1.0", "end-1c").strip()
+        if not content:
+            messagebox.showinfo("复制日志", "日志为空，请先运行 AirMouse。")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
+        self.root.update()  # 确保窗口关闭后剪贴板仍可用
+        messagebox.showinfo("复制日志", "日志已复制到剪贴板 ✅\n可直接粘贴发给开发者。")
+
+    def _clear_log(self) -> None:
+        """清空日志区域。"""
+        self.log_widget.configure(state="normal")
+        self.log_widget.delete("1.0", "end")
         self.log_widget.configure(state="disabled")
 
     def _set_running(self, running: bool) -> None:

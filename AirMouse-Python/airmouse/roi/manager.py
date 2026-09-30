@@ -7,9 +7,11 @@ from typing import Optional, Tuple
 
 @dataclass
 class ROIConfig:
-    base_scale: float = 1.2  # Global multiplier A
-    width_ratio: float = 1.5  # k_w
-    height_ratio: float = 1.0  # k_h
+    base_scale: float = 1.2  # Global multiplier A (legacy)
+    width_ratio: float = 1.5  # k_w (legacy)
+    height_ratio: float = 1.0  # k_h (legacy)
+    touchpad_width_multiplier: float = 0.0  # n x palm width; <=0 falls back to legacy fields
+    target_aspect_ratio: float = 0.0  # <=0 falls back to height_ratio
     min_width_frac: float = 0.15
     max_width_frac: float = 0.70
     fit_margin: float = 16.0
@@ -64,26 +66,26 @@ class ROIManager:
         hand_present: bool,
         cx: Optional[float],
         cy: Optional[float],
-        scale: Optional[float],
+        palm_width: Optional[float],
     ) -> ROIResult:
         width, height = frame_size
         dt = 0.0 if self._last_timestamp is None else max(timestamp - self._last_timestamp, 0.0)
         self._last_timestamp = timestamp
 
-        if not hand_present or cx is None or cy is None or scale is None:
+        if not hand_present or cx is None or cy is None or palm_width is None:
             return self._handle_no_hand(timestamp, frame_size)
 
         self._lost_frames = 0
 
         if self._state == "idle":
-            self._enter_preview(scale, frame_size, cx, cy)
+            self._enter_preview(palm_width, frame_size, cx, cy)
 
         if self._state == "frozen":
             self._state = "active"
             self._frozen_until = None
 
         if self._state == "preview":
-            self._update_preview(scale, frame_size, cx, cy, dt)
+            self._update_preview(palm_width, frame_size, cx, cy, dt)
 
         if self._state == "active":
             # ROI remains locked; nothing to update other than ensuring it still fits
@@ -125,10 +127,10 @@ class ROIManager:
 
         return ROIResult(state=self._state, roi_box=None, show_box=False, countdown_value=None, frozen_remaining=None)
 
-    def _enter_preview(self, scale: float, frame_size: Tuple[int, int], cx: float, cy: float) -> None:
+    def _enter_preview(self, palm_width: float, frame_size: Tuple[int, int], cx: float, cy: float) -> None:
         self._state = "preview"
         self._countdown_remaining = self.config.countdown_seconds
-        size = self._compute_size(scale, frame_size[0])
+        size = self._compute_size(palm_width, frame_size)
         if not self._roi_fits((cx, cy), size, frame_size):
             self._roi_center = None
             self._roi_size = size
@@ -140,13 +142,13 @@ class ROIManager:
 
     def _update_preview(
         self,
-        scale: float,
+        palm_width: float,
         frame_size: Tuple[int, int],
         cx: float,
         cy: float,
         dt: float,
     ) -> None:
-        size = self._compute_size(scale, frame_size[0])
+        size = self._compute_size(palm_width, frame_size)
         self._roi_size = self._smooth_size(size, dt)
 
         fits_candidate = self._roi_fits((cx, cy), self._roi_size, frame_size)
@@ -175,17 +177,43 @@ class ROIManager:
         self._countdown_remaining = None
         self._countdown_visible = False
 
-    def _compute_size(self, scale: float, frame_width: int) -> Tuple[float, float]:
-        scale = max(scale, 1e-6)
-        width = self.config.base_scale * self.config.width_ratio * scale
-        height = self.config.base_scale * self.config.height_ratio * scale
+    def _compute_size(self, palm_width: float, frame_size: Tuple[int, int]) -> Tuple[float, float]:
+        palm_width = max(palm_width, 1e-6)
+        frame_w, frame_h = frame_size
+        margin = max(0.0, self.config.fit_margin)
+        available_w = max(1.0, frame_w - 2.0 * margin)
+        available_h = max(1.0, frame_h - 2.0 * margin)
 
-        min_w = self.config.min_width_frac * frame_width if self.config.min_width_frac > 0 else 0.0
-        max_w = self.config.max_width_frac * frame_width if self.config.max_width_frac > 0 else float("inf")
-        width = max(min_w, min(max_w, width))
+        multiplier = self.config.touchpad_width_multiplier
+        if multiplier <= 0.0:
+            multiplier = self.config.base_scale * self.config.width_ratio
+        width = multiplier * palm_width
 
-        # Height is derived proportionally; ensure at least a few pixels.
-        height = max(1.0, height)
+        min_w = self.config.min_width_frac * frame_w if self.config.min_width_frac > 0 else 0.0
+        min_w = min(min_w, available_w)
+
+        max_w = available_w
+        if self.config.max_width_frac > 0:
+            max_w = min(max_w, self.config.max_width_frac * frame_w)
+
+        aspect = self.config.target_aspect_ratio
+        if aspect > 0.0:
+            max_w = min(max_w, available_h * aspect)
+
+        max_w = max(1.0, max_w)
+        min_w = min(min_w, max_w)
+
+        width = max(width, min_w)
+        width = min(width, max_w)
+        width = max(1.0, width)
+
+        if aspect > 0.0:
+            height = max(1.0, width / aspect)
+        else:
+            height = self.config.base_scale * self.config.height_ratio * palm_width
+            height = min(height, available_h)
+            height = max(1.0, height)
+
         return width, height
 
     def _smooth_size(self, target: Tuple[float, float], dt: float) -> Tuple[float, float]:
