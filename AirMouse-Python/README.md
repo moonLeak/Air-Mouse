@@ -1,5 +1,7 @@
 # AirMouse（模块化重构）
 
+📖 手势、参数与常见问题见 [功能说明书](docs/功能说明书.md)。
+
 ## 运行
 - 激活虚拟环境：`source venv311/bin/activate`
 - 启动程序：`python -m airmouse`
@@ -18,11 +20,11 @@ python -m airmouse
 可以通过环境变量覆盖默认参数，例如：
 
 ```bash
-export AIRMOUSE_CAMERA_INDEX=2          # 指定摄像头索引（默认 2，可设为 0/1 使用内置摄像头）
+export AIRMOUSE_CAMERA_INDEX=0          # 指定摄像头索引（默认 0；打不开时自动尝试 0–10）
 export AIRMOUSE_FRAME_SCALE=0.6         # 摄像头画面缩放比例
 export AIRMOUSE_MONITOR_ENABLED=false   # 关闭调试监视器窗口
 export AIRMOUSE_MIRROR_HORIZONTAL=true  # 启用左右镜像（默认 true）
-export AIRMOUSE_MIRROR_VERTICAL=true    # 启用上下镜像（默认 true）
+export AIRMOUSE_MIRROR_VERTICAL=false   # 启用上下镜像（默认 false）
 export AIRMOUSE_ROI_EDGE_PADDING=0.05   # 判定框边缘映射提前量（0~0.49，越大越容易碰到屏幕边缘）
 export AIRMOUSE_ROI_COUNTDOWN_SECONDS=3 # 进入判定框锁定前的倒计时秒数
 export AIRMOUSE_ROI_EXIT_COUNTDOWN=5    # 离开判定框后重新判定的倒计时秒数

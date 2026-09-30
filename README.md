@@ -18,7 +18,7 @@
 
 **macOS App**：用 Xcode 打开 `AirMouse-macApp/AirMouse/AirMouse.xcodeproj`，详见该目录的 `README.md` 与 `CLAUDE.md`。
 
-**Python 版**：
+**Python 版**（手势与参数详见 [功能说明书](AirMouse-Python/docs/功能说明书.md)）：
 ```bash
 cd AirMouse-Python
 python3.11 -m venv venv311 && source venv311/bin/activate
