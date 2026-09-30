@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Allows Xcode's debugger (lldb) to attach to this process.
+	     Without this, Hardened Runtime blocks debugger attachment, which causes
+	     TCC to mark the process as untrusted and deny camera access in Xcode runs.
+	     Xcode automatically strips this entitlement in Release/Distribution builds. -->
+	<key>com.apple.security.get-task-allow</key>
+	<true/>
+</dict>
+</plist>
