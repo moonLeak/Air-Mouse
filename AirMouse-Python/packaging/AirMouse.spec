@@ -1,15 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 AirMouse.spec — PyInstaller 打包配置
-用法：在 Air Mouse Python APP/ 目录下执行
+用法：在 AirMouse-Python/packaging/ 目录下执行
     pyinstaller AirMouse.spec --clean --noconfirm
 """
 import os
 import sys
 
 # ── 路径定义 ─────────────────────────────────────────────────────────────────
-HERE    = os.path.dirname(os.path.abspath(SPEC))          # Air Mouse Python APP/
-SRC_DIR = os.path.normpath(os.path.join(HERE, "..", "AirMouse"))  # ../AirMouse/
+HERE    = os.path.dirname(os.path.abspath(SPEC))          # AirMouse-Python/packaging/
+SRC_DIR = os.path.normpath(os.path.join(HERE, ".."))  # AirMouse-Python/
 
 # ── 定位 mediapipe 模型文件 ──────────────────────────────────────────────────
 import mediapipe as _mp

@@ -17,14 +17,14 @@ DerivedData/
 *.xcuserstate
 
 # 打包产物（体积大，可由 build_mac.sh 重新生成）
-AirMouse-Python-Packaging/dist/
-AirMouse-Python-Packaging/build/
+AirMouse-Python/packaging/dist/
+AirMouse-Python/packaging/build/
 
 # 不上传：资产（数据集、演示视频）、重复备份、临时目录
-Assets/
-Archive/python-gui-backup-2025-11/
-New Air Mouse/
-_pysrc_old/
+/Assets/
+/Archive/python-gui-backup-2025-11/
+/New Air Mouse/
+/_pysrc_old/
 
 # 个人/本机配置（含密钥，切勿上传）
 .claude/

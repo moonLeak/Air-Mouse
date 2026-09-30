@@ -69,3 +69,6 @@ python -m airmouse.gui
 - `airmouse/gui.py`：基于 Tkinter 的简单控制面板，可通过 GUI 启动/停止 AirMouse 并调整常用参数。
 
 旧版 `airmouse/legacy.py` 已退役并会主动提示改用新入口。
+
+## 打包成 .app / .dmg
+见 `packaging/`：`cd packaging && ./build_mac.sh`（详见 `packaging/安装说明.md`）。

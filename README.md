@@ -8,8 +8,7 @@
 | 目录 | 内容 | 技术 | 状态 |
 |---|---|---|---|
 | [`AirMouse-macApp/`](AirMouse-macApp/) | macOS 原生 App（菜单栏 + 标定窗口），含 PRD / TechSpec；`ios/`、`shared/` 为预留 | Swift, SwiftUI, Vision, CGEvent | **主线，开发中** |
-| [`AirMouse-Python/`](AirMouse-Python/) | Python 模块化版本（ROI 判定框、卡尔曼滤波、GUI） | Python, MediaPipe, OpenCV | 稳定版（2025-11） |
-| [`AirMouse-Python-Packaging/`](AirMouse-Python-Packaging/) | 把 Python 版打成 macOS `.app` / `.dmg` 的脚本 | PyInstaller | 可用 |
+| [`AirMouse-Python/`](AirMouse-Python/) | Python 模块化版本（ROI 判定框、卡尔曼滤波、GUI），`packaging/` 内含 PyInstaller 打包脚本 | Python, MediaPipe, OpenCV | 稳定版（2025-11） |
 | [`Tools/`](Tools/) | 实验小工具：手部监控器、参考长度计算器、双目视觉、多点触控模拟 | Python | 参考 |
 | [`Archive/`](Archive/) | 早期版本与重构前脚本（2024-11） | Python | 仅存档 |
 
@@ -27,7 +26,7 @@ pip install -r requirements.txt
 python -m airmouse
 ```
 
-**打包 Python 版**：见 `AirMouse-Python-Packaging/安装说明.md` 与 `build_mac.sh`。
+**打包 Python 版**：见 `AirMouse-Python/packaging/`（`build_mac.sh`、`安装说明.md`），生成 macOS `.app` / `.dmg`。
 
 ## 说明
 - 虚拟环境、`dist/`、`build/` 不在版本库中，需本地生成。

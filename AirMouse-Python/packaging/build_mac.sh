@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 # build_mac.sh — Air Mouse macOS 一键构建脚本
-# 运行方式：在终端中 cd 到 "Air Mouse Python APP" 文件夹，执行：
+# 运行方式：在终端中 cd 到 AirMouse-Python/packaging 文件夹，执行：
 #   chmod +x build_mac.sh && ./build_mac.sh
 # =============================================================================
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/../AirMouse"
+SRC="$HERE/.."
 VENV="$HERE/.venv"
 DIST="$HERE/dist"
 APP_PATH="$DIST/Air Mouse.app"
@@ -49,7 +49,7 @@ success "Python $PY_VER"
 
 # 检查 AirMouse 源码存在
 if [[ ! -d "$SRC/airmouse" ]]; then
-    error "找不到 AirMouse 源码目录：$SRC/airmouse\n请确保 'AirMouse' 文件夹与 'Air Mouse Python APP' 在同一目录下。"
+    error "找不到 AirMouse 源码目录：$SRC/airmouse\n请在 AirMouse-Python/packaging 目录下运行本脚本。"
 fi
 success "AirMouse 源码目录已找到"
 

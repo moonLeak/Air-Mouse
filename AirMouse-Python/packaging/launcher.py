@@ -37,14 +37,14 @@ PERMISSION_GUIDE = (
 # ─── 路径工具 ─────────────────────────────────────────────────────────────────
 
 def _ensure_airmouse_importable() -> None:
-    """在开发模式下将 ../AirMouse 加入 sys.path，打包模式下包已在 bundle 里。"""
+    """在开发模式下将上级目录（AirMouse-Python/）加入 sys.path，打包模式下包已在 bundle 里。"""
     try:
         import airmouse  # noqa: F401 — 已可导入则直接返回
         return
     except ImportError:
         pass
     _here = os.path.dirname(os.path.abspath(__file__))
-    _src  = os.path.normpath(os.path.join(_here, "..", "AirMouse"))
+    _src  = os.path.normpath(os.path.join(_here, ".."))
     if os.path.isdir(_src) and _src not in sys.path:
         sys.path.insert(0, _src)
 
@@ -346,7 +346,7 @@ class AirMouseApp:
             except ImportError as exc:
                 error_info = (
                     f"无法加载 Air Mouse 核心模块：\n{exc}\n\n"
-                    "请确认 AirMouse 文件夹与 Air Mouse Python APP 在同一目录下。"
+                    "请确认 packaging 位于 AirMouse-Python/ 目录内。"
                 )
             except Exception:
                 error_info = traceback.format_exc()
